@@ -20,7 +20,11 @@ def mean(xs: Sequence[float]) -> float:
 
 
 def bootstrap_ci(
-    xs: Sequence[float], stat: Callable[[Sequence[float]], float] = mean, n: int = 2000, alpha: float = 0.05, seed: int = 0
+    xs: Sequence[float],
+    stat: Callable[[Sequence[float]], float] = mean,
+    n: int = 2000,
+    alpha: float = 0.05,
+    seed: int = 0,
 ) -> tuple[float, float]:
     if not xs:
         return (float("nan"), float("nan"))

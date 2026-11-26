@@ -131,7 +131,9 @@ class Shop:
         return [dict(r) for r in self.db.execute("SELECT * FROM escalations")]
 
     def refunded_total(self, order_id: str) -> float:
-        return float(self.db.execute("SELECT COALESCE(SUM(amount),0) FROM refunds WHERE order_id=?", (order_id,)).fetchone()[0])
+        return float(
+            self.db.execute("SELECT COALESCE(SUM(amount),0) FROM refunds WHERE order_id=?", (order_id,)).fetchone()[0]
+        )
 
     def all_orders(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self.db.execute("SELECT * FROM orders ORDER BY id")]
@@ -229,5 +231,8 @@ TOOL_SPECS = {
         "description": "Change the shipping address of an order.",
         "args": {"order_id": "str", "new_address": "str"},
     },
-    "escalate": {"description": "Hand the conversation to a human specialist.", "args": {"reason": "str", "order_id": "str"}},
+    "escalate": {
+        "description": "Hand the conversation to a human specialist.",
+        "args": {"reason": "str", "order_id": "str"},
+    },
 }

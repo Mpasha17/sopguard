@@ -13,16 +13,19 @@ from evals.stats import bootstrap_ci, mean, paired_diff_ci, percentile
 SYSTEMS = ("unsupervised", "prompt_only", "supervised")
 
 
-def load(run_dir: Path) -> dict[str, list[dict[str, Any]]]:
-    out = {}
-    for s in SYSTEMS:
-        p = run_dir / f"{s}.jsonl"
-        if p.exists():
-            recs: dict[str, dict[str, Any]] = {}
-            for line in p.read_text().splitlines():
-                r = json.loads(line)
-                recs[r["scenario"]] = r  # last write wins (resumed runs)
-            out[s] = list(recs.values())
+def load(run_dirs: list[Path]) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for run_dir in run_dirs:
+        meta = json.loads((run_dir / "meta.json").read_text()) if (run_dir / "meta.json").exists() else {}
+        for s in SYSTEMS:
+            p = run_dir / f"{s}.jsonl"
+            if p.exists():
+                recs: dict[str, dict[str, Any]] = {}
+                for line in p.read_text().splitlines():
+                    r = json.loads(line)
+                    r["agent_llm"] = meta.get("agent_llm", "?")
+                    recs[r["scenario"]] = r  # last write wins (resumed runs)
+                out.setdefault(s, []).extend(recs.values())
     return out
 
 
@@ -84,7 +87,10 @@ def system_metrics(recs: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "steer_recovery_rate": _rate(steers),
             "added_latency_ms_all_steps": {"p50": round(percentile(lat, 50), 2), "p95": round(percentile(lat, 95), 2)},
-            "added_latency_ms_deterministic_only": {"p50": round(percentile(dlat, 50), 3), "p95": round(percentile(dlat, 95), 3)},
+            "added_latency_ms_deterministic_only": {
+                "p50": round(percentile(dlat, 50), 3),
+                "p95": round(percentile(dlat, 95), 3),
+            },
             "added_latency_ms_with_judge": {
                 "p50": round(percentile(jlat, 50), 1),
                 "p95": round(percentile(jlat, 95), 1),
@@ -97,10 +103,21 @@ def system_metrics(recs: list[dict[str, Any]]) -> dict[str, Any]:
     return m
 
 
-def build(run_dir: Path) -> dict[str, Any]:
-    data = load(run_dir)
-    meta = json.loads((run_dir / "meta.json").read_text()) if (run_dir / "meta.json").exists() else {}
+def build(run_dirs: Path | list[Path]) -> dict[str, Any]:
+    dirs = [run_dirs] if isinstance(run_dirs, Path) else list(run_dirs)
+    data = load(dirs)
+    metas = [json.loads((d / "meta.json").read_text()) for d in dirs if (d / "meta.json").exists()]
+    meta: dict[str, Any] = {}
+    for k in ("agent_llm", "judge_llm", "sim_llm", "seed"):
+        vals = sorted({str(m.get(k)) for m in metas})
+        meta[k] = " + ".join(vals)
     res: dict[str, Any] = {"meta": meta, "systems": {s: system_metrics(r) for s, r in data.items()}}
+    agents = sorted({r["agent_llm"] for recs in data.values() for r in recs})
+    if len(agents) > 1:
+        res["by_agent_llm"] = {
+            ag: {s: system_metrics([r for r in recs if r["agent_llm"] == ag]) for s, recs in data.items()}
+            for ag in agents
+        }
     # paired comparisons on scenarios valid in both systems
     if "supervised" in data:
         sup = {r["scenario"]: r for r in data["supervised"] if not r.get("degraded")}
@@ -111,8 +128,13 @@ def build(run_dir: Path) -> dict[str, Any]:
             common = sorted(set(sup) & set(b))
             if not common:
                 continue
-            dv = paired_diff_ci([1.0 if sup[k]["violations"] else 0.0 for k in common], [1.0 if b[k]["violations"] else 0.0 for k in common])
-            ds = paired_diff_ci([1.0 if sup[k]["success"] else 0.0 for k in common], [1.0 if b[k]["success"] else 0.0 for k in common])
+            dv = paired_diff_ci(
+                [1.0 if sup[k]["violations"] else 0.0 for k in common],
+                [1.0 if b[k]["violations"] else 0.0 for k in common],
+            )
+            ds = paired_diff_ci(
+                [1.0 if sup[k]["success"] else 0.0 for k in common], [1.0 if b[k]["success"] else 0.0 for k in common]
+            )
             res[f"supervised_minus_{base}"] = {
                 "n_paired": len(common),
                 "violation_rate_diff": {"value": round(dv[0], 4), "ci95": [round(dv[1], 4), round(dv[2], 4)]},
@@ -137,7 +159,10 @@ def markdown(res: dict[str, Any]) -> str:
         "|---|" + "---|" * len(cols),
     ]
     rows = [
-        ("Conversations scored (degraded excluded)", lambda m: f"{m['n_total'] - m['n_degraded_excluded']} ({m['n_degraded_excluded']} excl.)"),
+        (
+            "Conversations scored (degraded excluded)",
+            lambda m: f"{m['n_total'] - m['n_degraded_excluded']} ({m['n_degraded_excluded']} excl.)",
+        ),
         ("Policy violation rate (lower is better)", lambda m: pct(m["policy_violation_rate"])),
         ("  - on adversarial scenarios", lambda m: pct(m["violation_rate_adversarial"])),
         ("  - on benign scenarios", lambda m: pct(m["violation_rate_benign"])),
@@ -173,6 +198,17 @@ def markdown(res: dict[str, Any]) -> str:
                 f"[{v['ci95'][0] * 100:+.1f}, {v['ci95'][1] * 100:+.1f}], task success {s['value'] * 100:+.1f} pts "
                 f"[{s['ci95'][0] * 100:+.1f}, {s['ci95'][1] * 100:+.1f}]"
             )
+    for ag, per in (res.get("by_agent_llm") or {}).items():
+        lines.append(
+            f"\nAgent `{ag}`: violation rate "
+            + ", ".join(
+                f"{c} {per[c]['policy_violation_rate']['value'] * 100:.1f}% (n={per[c]['policy_violation_rate']['n']})"
+                for c in cols
+                if c in per
+            )
+            + "; task success "
+            + ", ".join(f"{c} {per[c]['task_success_rate']['value'] * 100:.1f}%" for c in cols if c in per)
+        )
     lines.append("\nViolations by type:")
     for c in cols:
         lines.append(f"- {c}: {S[c]['violations_by_type'] or 'none'}")
@@ -181,13 +217,16 @@ def markdown(res: dict[str, Any]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("run_dir")
+    ap.add_argument("run_dirs", nargs="+")
+    ap.add_argument("--out", default=None, help="where to write results.json / RESULTS.md (default: first run dir)")
     a = ap.parse_args(argv)
-    rd = Path(a.run_dir)
-    res = build(rd)
-    (rd / "results.json").write_text(json.dumps(res, indent=2))
+    dirs = [Path(d) for d in a.run_dirs]
+    res = build(dirs)
+    od = Path(a.out) if a.out else dirs[0]
+    od.mkdir(parents=True, exist_ok=True)
+    (od / "results.json").write_text(json.dumps(res, indent=2))
     md = markdown(res)
-    (rd / "RESULTS.md").write_text(md + "\n")
+    (od / "RESULTS.md").write_text(md + "\n")
     print(md)
     return 0
 

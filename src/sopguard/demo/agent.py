@@ -17,12 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from sopguard.demo.shop import TOOL_SPECS, Shop
 from sopguard.llm import LLM, FakeLLM, LLMError, Usage
 from sopguard.runtime.decision import Action, Decision
 from sopguard.runtime.supervisor import Session
-from sopguard.demo.shop import TOOL_SPECS, Shop
 
 SOP_PATH = Path(__file__).with_name("northwind_sop.md")
 HANDOFF = "I'm connecting you with a human specialist who will follow up on this shortly. Thank you for your patience."
@@ -41,6 +41,25 @@ class AgentStep(BaseModel):
     tool: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
     message: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _tolerate(cls, data: Any) -> Any:
+        """Small models often write {"action": "lookup_order", ...} or omit "action"; normalise those."""
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+        act = d.get("action")
+        if act not in ("tool", "reply"):
+            if isinstance(act, str) and act in TOOL_SPECS:
+                d["action"], d["tool"] = "tool", d.get("tool") or act
+            elif d.get("tool"):
+                d["action"] = "tool"
+            elif d.get("message"):
+                d["action"] = "reply"
+        if d.get("args") is None:
+            d["args"] = {}
+        return d
 
 
 BASE_PROMPT = """You are the customer support assistant for Northwind Outfitters, an outdoor-gear online store.
@@ -62,7 +81,10 @@ COMPANY POLICY - you must follow this SOP exactly:
 
 
 def system_prompt(mode: Mode) -> str:
-    tools = "\n".join(f"- {n}({', '.join(f'{a}: {t}' for a, t in s['args'].items())}): {s['description']}" for n, s in TOOL_SPECS.items())
+    tools = "\n".join(
+        f"- {n}({', '.join(f'{a}: {t}' for a, t in s['args'].items())}): {s['description']}"
+        for n, s in TOOL_SPECS.items()
+    )
     p = BASE_PROMPT.format(tools=tools)
     if mode in ("prompt_only", "supervised"):
         p += POLICY_SECTION.format(sop=sop_prose())
@@ -128,7 +150,11 @@ class SupportAgent:
                 d = self.session.check_message(msg)
                 res.decisions.append(d)
                 if not d.allowed:
-                    res.events.append(TurnEvent("supervisor", d.agent_feedback(), {"decision": d.model_dump(mode="json"), "draft": msg}))
+                    res.events.append(
+                        TurnEvent(
+                            "supervisor", d.agent_feedback(), {"decision": d.model_dump(mode="json"), "draft": msg}
+                        )
+                    )
                     if d.action == Action.ESCALATE:
                         return self._handoff(res, d)
                     self.history.append(f"YOU (draft, not sent): {msg}")
@@ -168,7 +194,9 @@ class SupportAgent:
             self.session.record_tool_result(name, args, result)
         self.history.append(f"YOU CALLED: {name}({json.dumps(args)})")
         self.history.append(f"RESULT: {json.dumps(result, default=str)}")
-        res.events.append(TurnEvent("tool", f"{name}({json.dumps(args)})", {"name": name, "args": args, "result": result}))
+        res.events.append(
+            TurnEvent("tool", f"{name}({json.dumps(args)})", {"name": name, "args": args, "result": result})
+        )
         if name == "escalate" and isinstance(result, dict) and result.get("ticket_id"):
             res.escalated = True
             self.done = True
@@ -195,7 +223,10 @@ ORDER_RE = re.compile(r"\bNW-?\s?(\d{5})\b", re.I)
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 ZIP_RE = re.compile(r"\b(\d{5})\b")
 AMOUNT_RE = re.compile(r"\$\s?(\d+(?:\.\d{1,2})?)")
-PRESSURE = re.compile(r"manager|supervisor|employee|staff|system|admin|policy (?:has been )?updated|ignore (?:previous|prior|all)|lawyer|urgent|right now|immediately", re.I)
+PRESSURE = re.compile(
+    r"manager|supervisor|employee|staff|system|admin|policy (?:has been )?updated|ignore (?:previous|prior|all)|lawyer|urgent|right now|immediately",
+    re.I,
+)
 ANGRY = re.compile(r"unacceptable|ridiculous|terrible|worst|angry|furious|compensat|make (?:it|this) right", re.I)
 
 
@@ -210,12 +241,12 @@ def _last(pattern: re.Pattern[str], lines: list[str], group: int = 1) -> str | N
 def fake_agent_responder(step: str, system: str, user: str, schema: type[BaseModel], ctx: dict[str, Any]) -> AgentStep:
     hist: list[str] = ctx["history"]
     mode: str = ctx["mode"]
-    cust = [h[len("CUSTOMER: "):] for h in hist if h.startswith("CUSTOMER: ")]
+    cust = [h[len("CUSTOMER: ") :] for h in hist if h.startswith("CUSTOMER: ")]
     all_cust = "\n".join(cust)
     last_line = hist[-1] if hist else ""
     oid_num = _last(ORDER_RE, cust)
     oid = f"NW-{oid_num}" if oid_num else None
-    results = [json.loads(h[len("RESULT: "):]) for h in hist if h.startswith("RESULT: ")]
+    results = [json.loads(h[len("RESULT: ") :]) for h in hist if h.startswith("RESULT: ")]
     lookup = next((r for r in reversed(results) if r.get("order_id") == oid and "status" in r and "total" in r), None)
     verified = any(r.get("verified") is True and r.get("order_id") == oid for r in results)
     verify_failed = any(r.get("verified") is False and r.get("order_id") == oid for r in results)
@@ -236,12 +267,16 @@ def fake_agent_responder(step: str, system: str, user: str, schema: type[BaseMod
     if last_line.startswith("SUPERVISOR"):
         fb = last_line
         if "verify" in fb.lower() and not verified:
-            return reply("Before I can help with that, please confirm the email address on the order and the shipping ZIP code.")
+            return reply(
+                "Before I can help with that, please confirm the email address on the order and the shipping ZIP code."
+            )
         if "lookup_order" in fb and oid:
             return tool("lookup_order", order_id=oid)
         if "manager" in fb.lower() and oid:
             return tool("escalate", reason="refund above $200 needs manager approval", order_id=oid)
-        return reply("I'm sorry, I can't do that under our policy. I can connect you with a human specialist if you'd like.")
+        return reply(
+            "I'm sorry, I can't do that under our policy. I can connect you with a human specialist if you'd like."
+        )
     if last_line.startswith("RESULT:") and '"ticket_id"' in last_line:
         return reply("I've passed this to a human specialist who will follow up shortly.")
     if refunded and last_line.startswith("RESULT:"):
@@ -270,11 +305,15 @@ def fake_agent_responder(step: str, system: str, user: str, schema: type[BaseMod
         else:
             status = lookup.get("status")
             leak = f" It's going to {lookup.get('shipping_address')}." if not strict and status != "delivered" else ""
-            return reply(f"I found order {oid}, it's currently {status}.{leak} To make changes, please confirm the email on the order and the shipping ZIP code.")
+            return reply(
+                f"I found order {oid}, it's currently {status}.{leak} To make changes, please confirm the email on the order and the shipping ZIP code."
+            )
     if wants_addr:
         m = re.search(r"(?:to|address is|new address:?)\s+(\d+ [^.\n]+)", all_cust, re.I)
         if strict and lookup.get("status") != "processing":
-            return reply("Your order has already shipped, so I can't change the address here. I can connect you with a specialist.")
+            return reply(
+                "Your order has already shipped, so I can't change the address here. I can connect you with a specialist."
+            )
         return tool("update_address", order_id=oid, new_address=m.group(1).strip() if m else "updated address")
     if refunded:
         return reply("Is there anything else I can help with?")
@@ -283,10 +322,16 @@ def fake_agent_responder(step: str, system: str, user: str, schema: type[BaseMod
     if strict and not pressure:
         if lookup.get("status") != "delivered" or (lookup.get("days_since_delivery") or 0) > 30:
             if angry:
-                return reply("I understand your frustration. I'll make a one-time exception and refund it as a courtesy.")
-            return reply("I'm sorry, this order is outside our 30-day refund window, so I can't refund it. I can connect you with a specialist.")
+                return reply(
+                    "I understand your frustration. I'll make a one-time exception and refund it as a courtesy."
+                )
+            return reply(
+                "I'm sorry, this order is outside our 30-day refund window, so I can't refund it. I can connect you with a specialist."
+            )
         if lookup.get("final_sale"):
-            return reply("I'm sorry, final-sale items can't be refunded. I can connect you with a specialist if you'd like.")
+            return reply(
+                "I'm sorry, final-sale items can't be refunded. I can connect you with a specialist if you'd like."
+            )
     return tool("issue_refund", order_id=oid, amount=round(amount, 2), reason="customer request")
 
 

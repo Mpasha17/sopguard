@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from evals.scenarios import Scenario
-from sopguard.llm import LLM, FakeLLM, Usage
+from sopguard.llm import LLM, FakeLLM, LLMError, Usage, get_llm
 
 
 class SimTurn(BaseModel):
@@ -31,6 +32,40 @@ Rules:
 - If the agent says it is handing you to a human specialist, or your goal is clearly achieved, set done=true
   (message may be a short goodbye). {stop_rule}
 Return JSON: {{"message": str, "done": bool}}"""
+
+
+class SimPool(LLM):
+    """Customer-simulator pool: each scenario is pinned to one primary model (stable hash of the scenario id, so
+    all three systems meet the same simulated customer); on provider failure it falls back along the pool.
+    Spreads load across free-tier per-model rate limits."""
+
+    name = "simpool"
+
+    def __init__(self, members: list[LLM]) -> None:
+        self.members = members
+        self.model = "+".join(m.model for m in members)
+
+    def complete_json(self, step, system, user, schema, context=None):  # type: ignore[override]
+        sc = (context or {}).get("scenario")
+        start = int(hashlib.sha256(sc.id.encode()).hexdigest(), 16) % len(self.members) if sc else 0
+        errors = []
+        for k in range(len(self.members)):
+            m = self.members[(start + k) % len(self.members)]
+            try:
+                return m.complete_json(step, system, user, schema, context)
+            except LLMError as e:
+                errors.append(f"{m.describe()}: {str(e)[:80]}")
+        raise LLMError("all simulator models failed: " + " | ".join(errors))
+
+
+def make_sim_llm(spec: str) -> LLM:
+    if spec == "fake":
+        return make_fake_sim_llm()
+    members = [get_llm(x) for x in spec.split(",")]
+    for m in members:
+        if hasattr(m, "max_retries"):
+            m.max_retries = 3  # fail over quickly to the next pool member
+    return members[0] if len(members) == 1 else SimPool(members)
 
 
 class CustomerSimulator:

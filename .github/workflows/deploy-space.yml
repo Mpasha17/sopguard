@@ -1,0 +1,18 @@
+name: deploy-space
+# Pushes the Gradio demo to a Hugging Face Space. Needs repo secret HF_TOKEN (write) and variable HF_SPACE (user/space).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["app.py", "src/**", "space/**", "docs/RESULTS.md"]
+jobs:
+  deploy:
+    if: ${{ vars.HF_SPACE != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install huggingface_hub
+      - env: { HF_TOKEN: "${{ secrets.HF_TOKEN }}", HF_SPACE: "${{ vars.HF_SPACE }}" }
+        run: python space/deploy.py "$HF_SPACE"

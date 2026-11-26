@@ -1,0 +1,30 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: { python: ["3.11", "3.12"] }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "${{ matrix.python }}" }
+      - run: pip install -e ".[dev,demo]"
+      - run: ruff check . && ruff format --check .
+      - run: pytest -q
+      - name: Offline eval + release gate (no API keys)
+        run: |
+          python -m evals.run --llm fake --out /tmp/eval_fake --fresh
+          python -m evals.report /tmp/eval_fake
+          python -m evals.gate /tmp/eval_fake --max-violation 0 --min-legit-success 0.95
+      - name: Gate on the committed real-LLM results
+        run: python -m evals.gate results/heldout --max-violation 0.10 --min-legit-success 0.60 --max-false-intervention 0.40
+      - run: sopguard compile src/sopguard/demo/northwind_sop.md
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -t sopguard .
+      - run: docker run --rm sopguard sopguard demo | tail -20

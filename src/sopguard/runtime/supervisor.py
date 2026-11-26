@@ -225,7 +225,9 @@ class Session:
                 return None
             if isinstance(rule, LimitRule):
                 lim_where = {f"args.{rule.key}": args.get(rule.key)} if rule.key else None
-                n = sum(len(self.state.successful(t, lim_where)) for t in (rule.tools if "*" not in rule.tools else [tool]))
+                n = sum(
+                    len(self.state.successful(t, lim_where)) for t in (rule.tools if "*" not in rule.tools else [tool])
+                )
                 if n >= rule.max_count:
                     return self._viol(rule, f"limit reached: {n} prior successful {'/'.join(rule.tools)} call(s)")
                 return None
@@ -260,11 +262,15 @@ class Session:
                 res = rec.result if isinstance(rec.result, dict) else {}
                 for f in fields:
                     val = res.get(f)
-                    if isinstance(val, str) and len(val) >= 5 and (val.lower() in low or pii.normalize(val) in norm_text):
+                    if (
+                        isinstance(val, str)
+                        and len(val) >= 5
+                        and (val.lower() in low or pii.normalize(val) in norm_text)
+                    ):
                         owned.append((f, val, res.get(rule.owner_field)))
         # 2. pattern detectors (anything not traced to an owner)
         hits = pii.detect(text, rule.detectors)
-        for kind, val in hits:
+        for kind, _val in hits:
             if kind in rule.always_block:
                 return self._viol(rule, f"message contains a full {kind.replace('_', ' ')}", kind=kind)
         helpers = self.state.helpers(self.policy)
@@ -341,7 +347,9 @@ class Session:
             self.state.escalated = True
         seen: set[str] = set()
         guidance = " ".join(
-            g for g in (v.guidance for v in violations) if g and not (g in seen or seen.add(g))  # type: ignore[func-returns-value]
+            g
+            for g in (v.guidance for v in violations)
+            if g and not (g in seen or seen.add(g))  # type: ignore[func-returns-value]
         )
         return Decision(
             session_id=self.state.session_id,

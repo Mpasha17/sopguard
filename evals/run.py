@@ -19,7 +19,7 @@ from typing import Any
 
 from evals.grader import grade, intervention_needed, snapshot
 from evals.scenarios import Scenario, build_scenarios
-from evals.simulator import CustomerSimulator, make_fake_sim_llm
+from evals.simulator import CustomerSimulator, make_sim_llm
 from sopguard.demo.agent import HANDOFF, SupportAgent, fake_agent_responder
 from sopguard.demo.shop import Shop
 from sopguard.llm import LLM, LLMError, get_llm
@@ -31,6 +31,18 @@ from sopguard.runtime.supervisor import Supervisor
 SYSTEMS = ("unsupervised", "prompt_only", "supervised")
 SOP = Path(__file__).resolve().parents[1] / "src" / "sopguard" / "demo" / "northwind_sop.md"
 _write_lock = threading.Lock()
+
+
+def stratified(scenarios: list[Scenario]) -> list[Scenario]:
+    by_cat: dict[str, list[Scenario]] = {}
+    for s in scenarios:
+        by_cat.setdefault(s.category, []).append(s)
+    out: list[Scenario] = []
+    while any(by_cat.values()):
+        for c in list(by_cat):
+            if by_cat[c]:
+                out.append(by_cat[c].pop(0))
+    return out
 
 
 def run_one(sc: Scenario, system: str, agent_llm: LLM, sim_llm: LLM, sup: Supervisor | None) -> dict[str, Any]:
@@ -48,7 +60,7 @@ def run_one(sc: Scenario, system: str, agent_llm: LLM, sim_llm: LLM, sup: Superv
     msg = sim.opening()
     turns = 0
     try:
-        for turns in range(1, sc.max_turns + 1):
+        for turns in range(1, sc.max_turns + 1):  # noqa: B007 - read after the loop
             events.append({"role": "customer", "text": msg})
             r = agent.respond(msg)
             agent_calls += len(r.usage)
@@ -88,7 +100,9 @@ def run_one(sc: Scenario, system: str, agent_llm: LLM, sim_llm: LLM, sup: Superv
     except Exception as e:  # noqa: BLE001 - any crash marks the run degraded, never silently passes
         degraded = f"crash: {e!r} {traceback.format_exc()[-400:]}"
     if session is not None:
-        judge_fail = [e["text"] for e in session.state.events if e["role"] == "supervisor" and "judge unavailable" in e["text"]]
+        judge_fail = [
+            e["text"] for e in session.state.events if e["role"] == "supervisor" and "judge unavailable" in e["text"]
+        ]
         if judge_fail and not degraded:
             degraded = f"judge LLM error: {judge_fail[0][:200]}"
     db = snapshot(shop)
@@ -115,7 +129,23 @@ def run_one(sc: Scenario, system: str, agent_llm: LLM, sim_llm: LLM, sup: Superv
         "agent_cost_usd": round(agent_cost, 6),
         "sim_tokens": sim_tokens,
         "decisions": [
-            {k: dd.get(k) for k in ("id", "kind", "action", "tool", "args", "message", "latency_ms", "judge_calls", "judge_tokens", "steer_count", "needed", "note")}
+            {
+                k: dd.get(k)
+                for k in (
+                    "id",
+                    "kind",
+                    "action",
+                    "tool",
+                    "args",
+                    "message",
+                    "latency_ms",
+                    "judge_calls",
+                    "judge_tokens",
+                    "steer_count",
+                    "needed",
+                    "note",
+                )
+            }
             | {"rules": [v["rule_id"] for v in dd["violations"]], "sources": [v["source"] for v in dd["violations"]]}
             for dd in decisions
         ],
@@ -130,40 +160,66 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--llm", default="fake", help="agent LLM: fake | gemini[:model] | groq[:model] | ollama[:model]")
     ap.add_argument("--judge-llm", default=None, help="supervisor judge LLM (default: same as --llm)")
-    ap.add_argument("--sim-llm", default=None, help="customer simulator LLM (default: same as --llm)")
+    ap.add_argument(
+        "--sim-llm", default=None, help="customer simulator LLM or comma-separated pool (default: same as --llm)"
+    )
     ap.add_argument("--systems", default=",".join(SYSTEMS))
     ap.add_argument("--out", default="runs/fake")
     ap.add_argument("--limit", type=int, default=0, help="only the first N scenarios (smoke tests)")
     ap.add_argument("--only", default="", help="comma-separated scenario ids or categories")
-    ap.add_argument("--seed", type=int, default=11, help="scenario seed: 11 = dev suite (used while building), 2026 = held-out")
+    ap.add_argument(
+        "--seed", type=int, default=11, help="scenario seed: 11 = dev suite (used while building), 2026 = held-out"
+    )
+    ap.add_argument(
+        "--judge-timeout-ms",
+        type=int,
+        default=None,
+        help="override the policy's judge latency budget (deployment setting)",
+    )
+    ap.add_argument(
+        "--shard", default="0/1", help="i/n: run every n-th scenario starting at i (split work across model lanes)"
+    )
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--rpm", type=float, default=None, help="client-side requests/minute per LLM client")
     ap.add_argument("--fresh", action="store_true", help="ignore existing results instead of resuming")
     ap.add_argument("--retry-degraded", action="store_true", help="re-run scenarios previously marked degraded")
     a = ap.parse_args(argv)
 
-    fake = a.llm == "fake"
     agent_llm = get_llm(a.llm, fake=fake_agent_responder, rpm=a.rpm)  # type: ignore[arg-type]
     judge_spec = a.judge_llm or a.llm
     judge_llm = get_llm(judge_spec, fake=fake_judge_responder, rpm=a.rpm)  # type: ignore[arg-type]
     sim_spec = a.sim_llm or a.llm
-    sim_llm = make_fake_sim_llm() if sim_spec == "fake" else get_llm(sim_spec, rpm=a.rpm)
+    sim_llm = make_sim_llm(sim_spec)
 
     scenarios = build_scenarios(a.seed)
     if a.only:
         keys = set(a.only.split(","))
         scenarios = [s for s in scenarios if s.id in keys or s.category in keys]
+    si, sn = (int(x) for x in a.shard.split("/"))
+    scenarios = scenarios[si::sn]
     if a.limit:
         scenarios = scenarios[: a.limit]
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     meta = {
         "agent_llm": agent_llm.describe(), "judge_llm": judge_llm.describe(), "sim_llm": sim_llm.describe(),
-        "n_scenarios": len(scenarios), "seed": a.seed, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "policy": str(SOP.name),
+        "n_scenarios": len(scenarios), "seed": a.seed, "shard": a.shard, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "policy": str(SOP.name),
     }  # fmt: skip
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     policy = load_policy(SOP)
-    for system in a.systems.split(","):
+    if a.judge_timeout_ms:
+        policy.budgets.judge_timeout_ms = a.judge_timeout_ms
+    meta["judge_timeout_ms"] = policy.budgets.judge_timeout_ms
+    (out / "meta.json").write_text(json.dumps(meta, indent=2))
+    systems = a.systems.split(",")
+    sups: dict[str, Supervisor | None] = {
+        s: Supervisor(policy, judge=Judge(judge_llm), audit=AuditLog(out / "audit.jsonl", policy.source_hash))
+        if s == "supervised"
+        else None
+        for s in systems
+    }
+    jobs: list[tuple[Scenario, str]] = []
+    for system in systems:
         path = out / f"{system}.jsonl"
         done: dict[str, dict[str, Any]] = {}
         if path.exists() and not a.fresh:
@@ -175,23 +231,25 @@ def main(argv: list[str] | None = None) -> int:
         if a.fresh or a.retry_degraded:
             path.write_text("".join(json.dumps(r) + "\n" for r in done.values()))
         todo = [s for s in scenarios if s.id not in done]
-        sup = None
-        if system == "supervised":
-            sup = Supervisor(policy, judge=Judge(judge_llm), audit=AuditLog(out / "audit.jsonl", policy.source_hash))
         print(f"[{system}] {len(done)} done, {len(todo)} to run", file=sys.stderr)
-        with ThreadPoolExecutor(max_workers=max(1, a.workers)) as ex:
-            futs = {ex.submit(run_one, s, system, agent_llm, sim_llm, sup): s for s in todo}
-            for i, f in enumerate(as_completed(futs), 1):
-                rec = f.result()
-                with _write_lock, path.open("a") as fh:
-                    fh.write(json.dumps(rec, default=str) + "\n")
-                flag = "DEGRADED " + rec["degraded"][:80] if rec["degraded"] else ""
-                print(
-                    f"[{system}] {i}/{len(todo)} {rec['scenario']:<24} success={rec['success']!s:<5} "
-                    f"viol={rec['violations']} {rec['wall_s']}s {flag}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+        jobs += [(s, system) for s in todo]
+    # interleave: round-robin over categories, all systems of a scenario together, so a run cut short by a
+    # quota still yields paired, category-balanced results
+    order = {s.id: i for i, s in enumerate(stratified(scenarios))}
+    jobs.sort(key=lambda j: (order[j[0].id], systems.index(j[1])))
+    with ThreadPoolExecutor(max_workers=max(1, a.workers)) as ex:
+        futs = {ex.submit(run_one, sc, system, agent_llm, sim_llm, sups[system]): (sc, system) for sc, system in jobs}
+        for i, f in enumerate(as_completed(futs), 1):
+            rec = f.result()
+            with _write_lock, (out / f"{rec['system']}.jsonl").open("a") as fh:
+                fh.write(json.dumps(rec, default=str) + "\n")
+            flag = "DEGRADED " + rec["degraded"][:80] if rec["degraded"] else ""
+            print(
+                f"{i}/{len(jobs)} [{rec['system']:<12}] {rec['scenario']:<24} success={rec['success']!s:<5} "
+                f"viol={rec['violations']} {rec['wall_s']}s {flag}",
+                file=sys.stderr,
+                flush=True,
+            )
     return 0
 
 

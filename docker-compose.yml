@@ -1,0 +1,20 @@
+services:
+  api:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      # judge for semantic rules: fake (offline) | gemini[:model] | groq[:model] | ollama[:model]
+      SOPGUARD_JUDGE_LLM: ${SOPGUARD_JUDGE_LLM:-fake}
+      SOPGUARD_UPSTREAM: ${SOPGUARD_UPSTREAM:-https://api.groq.com/openai/v1}
+      SOPGUARD_AUDIT: /data/audit.jsonl
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    command: ["sopguard", "serve", "--host", "0.0.0.0", "--port", "8080", "--audit", "/data/audit.jsonl"]
+    volumes: ["audit:/data"]
+  demo:
+    build: .
+    ports: ["7860:7860"]
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    command: ["python", "app.py"]
+volumes:
+  audit: {}

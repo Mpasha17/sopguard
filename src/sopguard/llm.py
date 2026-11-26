@@ -144,8 +144,6 @@ class _RateLimiter:
         self.next_at = 0.0
 
     def wait(self) -> None:
-        if not self.interval:
-            return
         with self.lock:
             now = time.monotonic()
             at = max(now, self.next_at)
@@ -158,6 +156,21 @@ class _RateLimiter:
             self.next_at = max(self.next_at, time.monotonic() + seconds)
 
 
+_LIMITERS: dict[tuple[str, str], _RateLimiter] = {}
+_LIMITERS_LOCK = threading.Lock()
+
+
+def shared_limiter(provider: str, model: str, rpm: float) -> _RateLimiter:
+    """Quotas are per provider+model, so every client of the same model shares one limiter."""
+    with _LIMITERS_LOCK:
+        lim = _LIMITERS.get((provider, model))
+        if lim is None:
+            lim = _LIMITERS[(provider, model)] = _RateLimiter(rpm)
+        elif rpm and (not lim.interval or 60.0 / rpm > lim.interval):
+            lim.interval = 60.0 / rpm
+        return lim
+
+
 class _HTTPLLM(LLM):
     def __init__(
         self, api_key: str, model: str, timeout: float = 45.0, rpm: float = 0, max_retries: int = 8,
@@ -168,7 +181,7 @@ class _HTTPLLM(LLM):
         self.timeout = timeout
         self.max_retries = max_retries
         self.client = client or httpx.Client(timeout=timeout)
-        self.limiter = _RateLimiter(rpm)
+        self.limiter = shared_limiter(type(self).__name__, model, rpm)
 
     def _call(self, system: str, user: str) -> tuple[str, int, int]:
         raise NotImplementedError
@@ -192,9 +205,8 @@ class _HTTPLLM(LLM):
                 raise
             except RetryableLLMError as e:
                 last = e
-                wait = e.retry_after if e.retry_after else min(60.0, 2.0 * 2**attempt) + random.random()
-                self.limiter.penalize(wait)
-                time.sleep(wait)
+                wait = (e.retry_after or min(60.0, 2.0 * 2**attempt)) + random.random()
+                self.limiter.penalize(wait)  # every thread using this model backs off together
             except (ValidationError, json.JSONDecodeError, LLMError) as e:
                 last = e
                 prompt = (
@@ -266,10 +278,12 @@ class OpenAICompatLLM(_HTTPLLM):
 
 
 def get_llm(spec: str, fake: Responder | None = None, rpm: float | None = None) -> LLM:
-    """Build a client from a spec: ``fake`` | ``gemini[:model]`` | ``groq[:model]`` | ``ollama[:model]``."""
+    """Build a client from a spec: ``fake`` | ``gemini[:model]`` | ``groq[:model]`` | ``ollama[:model]``,
+    optionally suffixed with ``@<requests per minute>``."""
+    spec, _, rpm_s = spec.partition("@")  # optional per-model pacing: gemini:gemini-3.5-flash-lite@12
     kind, _, model = spec.partition(":")
     kind = kind.lower()
-    rpm = float(os.getenv("SOPGUARD_RPM", "0")) if rpm is None else rpm
+    rpm = float(rpm_s) if rpm_s else (float(os.getenv("SOPGUARD_RPM", "0")) if rpm is None else rpm)
     if kind == "fake":
         if fake is None:
             raise LLMError("fake LLM requested without a responder")
