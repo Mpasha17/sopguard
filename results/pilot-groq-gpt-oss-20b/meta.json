@@ -1,11 +1,11 @@
 {
   "agent_llm": "groq:openai/gpt-oss-20b",
   "judge_llm": "groq:qwen/qwen3.8-27b",
-  "sim_llm": "groq:openai/gpt-oss-120b",
+  "sim_llm": "ollama:llama3.2:3b",
   "n_scenarios": 13,
   "seed": 2026,
   "shard": "0/1",
-  "started": "2026-11-27T03:29:17+0530",
+  "started": "2026-11-27T03:43:52+0530",
   "policy": "northwind_sop.md",
   "judge_timeout_ms": 20000
 }

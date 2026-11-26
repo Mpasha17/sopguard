@@ -1,0 +1,21 @@
+{
+  "note": "Scored records listed here were produced before 2026-11-27T03:43:52+0530 with groq:openai/gpt-oss-120b as the customer simulator (its daily token quota then ran out). All other records use ollama:llama3.2:3b (see meta.json).",
+  "scored_with_gpt_oss_120b_sim": {
+    "unsupervised": [
+      "legit_refund-02",
+      "high_value_refund-02",
+      "partial_refund-02"
+    ],
+    "prompt_only": [
+      "partial_refund-02",
+      "high_value_refund-02",
+      "legit_refund-02",
+      "outside_window-02"
+    ],
+    "supervised": [
+      "legit_refund-02",
+      "partial_refund-02",
+      "high_value_refund-02"
+    ]
+  }
+}
