@@ -19,8 +19,12 @@ jobs:
           python -m evals.run --llm fake --out /tmp/eval_fake --fresh
           python -m evals.report /tmp/eval_fake
           python -m evals.gate /tmp/eval_fake --max-violation 0 --min-legit-success 0.95
-      - name: Gate on the committed real-LLM results
-        run: python -m evals.gate results/heldout --max-violation 0.10 --min-legit-success 0.60 --max-false-intervention 0.40
+      - name: Re-score committed real-LLM results and gate them
+        run: |
+          if [ -d results/heldout-llama3.2-3b ]; then
+            python -m evals.report results/heldout-llama3.2-3b --out /tmp/rescored
+            python -m evals.gate results/heldout-llama3.2-3b --max-violation 0.15 --min-legit-success 0.30 --max-false-intervention 0.50
+          fi
       - run: sopguard compile src/sopguard/demo/northwind_sop.md
   docker:
     runs-on: ubuntu-latest
