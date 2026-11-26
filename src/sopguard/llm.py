@@ -227,6 +227,8 @@ class _HTTPLLM(LLM):
             if r.status_code == 429 and ("PerDay" in r.text or "per day" in r.text.lower()):
                 raise FatalLLMError(f"daily quota exhausted: HTTP 429 {r.text[:200]}")
             raise RetryableLLMError(f"HTTP {r.status_code}: {r.text[:200]}", delay)
+        if r.status_code == 400 and ("json_validate_failed" in r.text or "tool_use_failed" in r.text):
+            raise LLMError(f"malformed generation: {r.text[:200]}")  # model's fault: re-ask, don't abort the run
         if r.status_code >= 400:
             raise FatalLLMError(f"HTTP {r.status_code}: {r.text[:300]}")
 
@@ -265,6 +267,10 @@ class OpenAICompatLLM(_HTTPLLM):
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "response_format": {"type": "json_object"},
         }
+        if "gpt-oss" in self.model:
+            # Groq's server-side JSON validation rejects many gpt-oss generations outright; parse client-side instead.
+            del body["response_format"]
+            body["reasoning_effort"] = "low"  # keeps hidden reasoning tokens (and free-tier TPM) in check
         r = self.client.post(
             f"{self.base_url}/chat/completions",
             json=body,

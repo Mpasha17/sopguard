@@ -63,3 +63,20 @@ def test_schema_repair_then_give_up():
 
     with pytest.raises(llm.LLMError, match="failed after 3 attempts"):
         _gemini(handler).complete_json("t", "s", "u", Out)
+
+
+def test_groq_malformed_generation_is_re_asked_not_fatal():
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        if len(calls) == 1:
+            return httpx.Response(400, text='{"error": {"code": "json_validate_failed"}}')
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": true}'}}], "usage": {}})
+
+    m = llm.OpenAICompatLLM(
+        "k", "openai/gpt-oss-20b", "https://x", "groq", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    out, usage = m.complete_json("t", "s", "u", Out)
+    assert out.ok and len(calls) == 2
+    assert b"response_format" not in calls[0].content and b"reasoning_effort" in calls[0].content
