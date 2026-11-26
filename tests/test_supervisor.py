@@ -178,3 +178,17 @@ def test_audit_log_records_every_decision(policy, tmp_path):
     s.check_message("hello")
     lines = (tmp_path / "audit.jsonl").read_text().splitlines()
     assert len(lines) == 2 and '"policy_hash"' in lines[0] and "SOP" in lines[0]
+
+
+def test_agent_handoff_on_message_escalation_returns_turn_result(policy, shop):
+    """Regression: escalation of a *reply* must end the turn with a TurnResult, not a bool."""
+    from sopguard.demo.agent import HANDOFF, SupportAgent
+    from sopguard.llm import FakeLLM
+
+    def always_false_claim(step, system, user, schema, ctx):
+        return {"action": "reply", "message": "Your refund has been issued!"}
+
+    sess = Supervisor(policy).session("esc")
+    agent = SupportAgent(FakeLLM(always_false_claim), shop, "supervised", sess)
+    r = agent.respond("hi")
+    assert r.reply == HANDOFF and r.escalated and agent.done

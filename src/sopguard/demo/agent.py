@@ -156,7 +156,8 @@ class SupportAgent:
                         )
                     )
                     if d.action == Action.ESCALATE:
-                        return self._handoff(res, d)
+                        self._handoff(res, d)
+                        return res
                     self.history.append(f"YOU (draft, not sent): {msg}")
                     self.history.append(d.agent_feedback())
                     continue
