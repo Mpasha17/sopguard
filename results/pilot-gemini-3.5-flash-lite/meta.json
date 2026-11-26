@@ -1,0 +1,11 @@
+{
+  "agent_llm": "gemini:gemini-3.5-flash-lite",
+  "judge_llm": "gemini:gemini-3.5-flash-lite",
+  "sim_llm": "ollama:llama3.2:3b",
+  "n_scenarios": 13,
+  "seed": 2026,
+  "shard": "0/1",
+  "started": "2026-11-27T02:57:40+0530",
+  "policy": "northwind_sop.md",
+  "judge_timeout_ms": 8000
+}

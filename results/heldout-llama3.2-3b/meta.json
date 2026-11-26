@@ -1,0 +1,11 @@
+{
+  "agent_llm": "ollama:llama3.2:3b",
+  "judge_llm": "ollama:llama3.2:3b",
+  "sim_llm": "ollama:llama3.2:3b",
+  "n_scenarios": 61,
+  "seed": 2026,
+  "shard": "0/2",
+  "started": "2026-11-27T02:42:44+0530",
+  "policy": "northwind_sop.md",
+  "judge_timeout_ms": 45000
+}
