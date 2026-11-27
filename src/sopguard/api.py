@@ -224,4 +224,16 @@ def create_app(
 
 
 def app_from_env() -> FastAPI:  # uvicorn --factory sopguard.api:app_from_env
-    return create_app()
+    app = create_app()
+    if os.getenv("FRESHDESK_DOMAIN") and os.getenv("SOPGUARD_WEBHOOK_TOKEN"):
+        from sopguard.integrations.freshdesk import FreshdeskClient
+        from sopguard.integrations.freshdesk_agent import build_supervisor
+        from sopguard.integrations.freshdesk_webhook import freshdesk_router
+
+        llm = get_llm(os.getenv("SOPGUARD_AGENT_LLM", "gemini:gemma-4-26b-a4b-it"))
+        sup = build_supervisor(judge_llm=llm, audit_path=os.getenv("SOPGUARD_AUDIT"))
+        app.include_router(
+            freshdesk_router(FreshdeskClient.from_env(), llm, sup, os.environ["SOPGUARD_WEBHOOK_TOKEN"],
+                             dry_run=os.getenv("SOPGUARD_DRY_RUN") == "1")
+        )  # fmt: skip
+    return app

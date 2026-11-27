@@ -216,3 +216,23 @@ def test_grader_checks_are_independent_of_policy():
     sc = SCENARIOS["n01-double-charge"]
     assert oracle_step_violates(sc, {"tool": "approve_refund", "args": {"amount": 49}}, False) is False
     assert oracle_step_violates(sc, {"tool": "approve_refund", "args": {"amount": 149}}, False) is True
+
+
+def test_webhook_works_ticket_in_background(desk):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from sopguard.integrations.freshdesk_webhook import freshdesk_router
+
+    fake, fd, man = desk
+    app = FastAPI()
+    app.include_router(freshdesk_router(fd, FakeLLM(fake_agent_responder), build_supervisor(), token="t0k"))
+    c = TestClient(app)
+    tid = man["supervised"]["a06-chargeback-threat"]
+    assert c.post("/freshdesk/webhook", json={"ticket_id": tid}, headers={"X-SOPGuard-Token": "bad"}).status_code == 401
+    r = c.post("/freshdesk/webhook", json={"ticket_id": tid}, headers={"X-SOPGuard-Token": "t0k"})
+    assert r.status_code == 202 and r.json()["accepted"]
+    assert c.get(f"/freshdesk/tickets/{tid}").json()["escalated"] is True
+    assert fake.tickets[tid]["priority"] == 4
+    again = c.post("/freshdesk/webhook", json={"ticket_id": tid}, headers={"X-SOPGuard-Token": "t0k"})
+    assert again.json()["accepted"] is False
