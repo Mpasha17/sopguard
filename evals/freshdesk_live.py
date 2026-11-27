@@ -51,12 +51,17 @@ def cmd_run(a: argparse.Namespace, fd: FreshdeskClient) -> None:
     d = ROOT / a.run
     man = json.loads((d / "manifest.json").read_text())["tickets"]
     done = {(r["arm"], r["scenario"]) for r in _jsonl(d / "runs.jsonl") if not r.get("error")}
+    sel = _shard(a.shard)
+    mine = {s.id for i, s in enumerate(S) if sel(i)}
+    man = _replace_touched(fd, a.run, man, done | {(arm, x) for arm in man for x in man[arm] if x not in mine}, d)
     llm = get_llm(a.llm)
     judge = get_llm(a.judge_llm or a.llm)
     sup = build_supervisor(POLICY_PATH, judge, d / "audit.jsonl")
     kb = load_kb(fd)
     arms = a.arms.split(",")
-    jobs = [(s.id, arm) for s in S for arm in arms if s.id in man.get(arm, {}) and (arm, s.id) not in done]
+    jobs = [
+        (s.id, arm) for s in S for arm in arms if s.id in mine and s.id in man.get(arm, {}) and (arm, s.id) not in done
+    ]
     if a.limit:
         jobs = jobs[: a.limit]
     print(f"run={a.run} llm={llm.describe()} judge={judge.describe()} jobs={len(jobs)} (done {len(done)})", flush=True)
@@ -76,6 +81,58 @@ def cmd_run(a: argparse.Namespace, fd: FreshdeskClient) -> None:
 
     with ThreadPoolExecutor(a.workers) as ex:
         list(ex.map(one, jobs))
+
+
+def _shard(spec: str) -> Any:
+    """``"0,1,2/9"`` -> scenarios whose index mod 9 is 0, 1 or 2 (all arms of a scenario stay on one model)."""
+    if not spec:
+        return lambda i: True
+    ks, _, n = spec.partition("/")
+    keep = {int(k) for k in ks.split(",")}
+    return lambda i: i % int(n) in keep
+
+
+def _replace_touched(
+    fd: FreshdeskClient, run: str, man: dict[str, dict[str, int]], done: set[tuple[str, str]], d: Path
+) -> dict[str, dict[str, int]]:
+    """A ticket whose run was interrupted may already carry some agent writes. Never re-run on it: seed a fresh
+    replacement ticket for that (arm, scenario) and point the manifest at it."""
+    from datetime import datetime
+
+    from scripts.seed_freshdesk import scenario_tags
+
+    from sopguard.integrations.freshdesk import html_body
+
+    by_id = {t["id"]: t for t in fd.list_tickets()}
+    contacts = None
+    changed = False
+    for arm, tickets in man.items():
+        for scn, tid in list(tickets.items()):
+            if (arm, scn) in done or tid not in by_id:
+                continue
+            t = by_id[tid]
+            age = datetime.fromisoformat(t["updated_at"].replace("Z", "+00:00")) - datetime.fromisoformat(
+                t["created_at"].replace("Z", "+00:00")
+            )
+            if age.total_seconds() < 30:
+                continue
+            if contacts is None:
+                contacts = {(c.get("email") or "").lower(): c for c in fd.list_contacts()}
+            sc = SCENARIOS[scn]
+            body = sc.body.replace("{arm}", arm) + (f"\n\n{sc.followup}" if sc.followup else "")
+            req = contacts[P[sc.requester].email(arm)]
+            nt = fd.create_ticket(requester_id=req["id"], subject=sc.subject, description=html_body(body), status=2,
+                                  priority=2, source=1, tags=scenario_tags(sc, arm, run))  # fmt: skip
+            fd.update_ticket(tid, tags=[*t.get("tags", []), "superseded"])  # keep the old one out of any re-grade
+            print(f"replaced interrupted {arm}/{scn}: #{tid} -> #{nt['id']}", flush=True)
+            tickets[scn] = nt["id"]
+            changed = True
+    if changed:
+        mf = d / "manifest.json"
+        data = json.loads(mf.read_text())
+        data["tickets"] = man
+        mf.write_text(json.dumps(data, indent=2))
+    return man
 
 
 def cmd_grade(a: argparse.Namespace, fd: FreshdeskClient) -> None:
@@ -237,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--judge-llm", default=None)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--shard", default="", help='scenario shard, e.g. "0,1,2/9" (index mod 9)')
     ap.add_argument("--rpm", type=float, default=45)
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)

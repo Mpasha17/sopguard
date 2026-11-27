@@ -191,7 +191,10 @@ class _HTTPLLM(LLM):
         prompt = user
         last: Exception | None = None
         t_start = time.perf_counter()
-        for attempt in range(1, self.max_retries + 1):
+        overloaded = 0
+        attempt = 0
+        while attempt < self.max_retries:
+            attempt += 1
             usage.attempts = attempt
             self.limiter.wait()
             try:
@@ -205,6 +208,12 @@ class _HTTPLLM(LLM):
                 raise
             except RetryableLLMError as e:
                 last = e
+                if str(e).startswith("HTTP 503") and overloaded < 20:
+                    # "model overloaded": a quick jittered retry usually lands; don't stall every thread
+                    overloaded += 1
+                    attempt -= 1
+                    time.sleep(1.0 + 3.0 * random.random())
+                    continue
                 wait = (e.retry_after or min(60.0, 2.0 * 2**attempt)) + random.random()
                 self.limiter.penalize(wait)  # every thread using this model backs off together
             except (ValidationError, json.JSONDecodeError, LLMError) as e:
