@@ -30,7 +30,7 @@ policy:
     confirm_words: "['that worked', 'works now', 'working now', 'it is fixed', \"it's fixed\", 'issue is fixed', 'you can close', 'please close', 'all sorted', 'problem solved', 'ho gaya', 'sorted now']"
   budgets:
     max_steers_per_step: 2
-    judge_timeout_ms: 30000
+    judge_timeout_ms: 60000
     judge_max_tokens_per_session: 30000
 ```
 

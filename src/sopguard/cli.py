@@ -5,6 +5,7 @@ sopguard demo [--llm fake|gemini]         run the scripted demo conversations, a
 sopguard chat [--mode supervised]         talk to the Northwind support agent yourself
 sopguard serve [--port 8080]              FastAPI supervision API + OpenAI-compatible proxy
 sopguard audit FILE [--session ID]        pretty-print an audit log
+sopguard freshdesk run [--dry-run]        work real Freshdesk tickets under the supervisor
 """
 
 from __future__ import annotations
@@ -153,6 +154,26 @@ def cmd_audit(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_freshdesk(a: argparse.Namespace) -> int:
+    from sopguard.integrations.freshdesk import FreshdeskClient, FreshdeskError
+    from sopguard.integrations.freshdesk_agent import build_supervisor, process_ticket, run_worker
+    from sopguard.llm import get_llm
+
+    try:
+        fd = FreshdeskClient.from_env(rpm=a.rpm)
+    except FreshdeskError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    llm = get_llm(a.llm)
+    sup = build_supervisor(a.policy, get_llm(a.judge_llm or a.llm), a.audit) if a.mode == "supervised" else None
+    if a.ticket:
+        r = process_ticket(fd, llm, a.ticket, a.mode, sup, dry_run=a.dry_run)
+        print(json.dumps(r.summary(), indent=2, default=str))
+        return 0 if not r.error else 2
+    run_worker(fd, llm, sup, a.mode, tag=a.tag, once=a.once, interval=a.interval, dry_run=a.dry_run, limit=a.limit)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="sopguard", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -183,6 +204,24 @@ def main(argv: list[str] | None = None) -> int:
     au.add_argument("--session", default=None)
     au.add_argument("--interventions", action="store_true", help="only non-allow decisions")
     au.set_defaults(fn=cmd_audit)
+    fd = sub.add_parser("freshdesk", help="work real Freshdesk tickets under the supervisor")
+    fds = fd.add_subparsers(dest="fd_cmd", required=True)
+    fr = fds.add_parser("run", help="poll open tickets, run the agent under SOPGuard, write back to Freshdesk")
+    fr.add_argument("--llm", default="gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b")
+    fr.add_argument("--judge-llm", default=None)
+    fr.add_argument(
+        "--policy", default=str(Path(__file__).resolve().parents[2] / "policies" / "freshdesk_support_sop.md")
+    )
+    fr.add_argument("--mode", default="supervised", choices=["unsupervised", "prompt_only", "supervised"])
+    fr.add_argument("--ticket", type=int, default=None, help="work just this ticket id")
+    fr.add_argument("--tag", default=None, help="only tickets with this tag")
+    fr.add_argument("--once", action="store_true", help="one pass over open tickets, then exit")
+    fr.add_argument("--interval", type=float, default=60.0)
+    fr.add_argument("--limit", type=int, default=0)
+    fr.add_argument("--rpm", type=float, default=45.0, help="Freshdesk API requests per minute")
+    fr.add_argument("--audit", default="audit-freshdesk.jsonl")
+    fr.add_argument("--dry-run", action="store_true", help="read tickets and decide, but write nothing to Freshdesk")
+    fr.set_defaults(fn=cmd_freshdesk)
     a = ap.parse_args(argv)
     return int(a.fn(a))
 

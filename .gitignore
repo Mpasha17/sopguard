@@ -12,3 +12,9 @@ __pycache__/
 !src/sopguard/demo/*.db
 audit*.jsonl
 .cache/
+
+# secrets
+.env.*
+!.env.example
+freshdesk.env
+secrets/

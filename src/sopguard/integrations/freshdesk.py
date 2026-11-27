@@ -168,6 +168,15 @@ class FreshdeskClient:
     def get_contact(self, contact_id: int) -> dict[str, Any]:
         return self.request("GET", f"/contacts/{int(contact_id)}")
 
+    def list_contacts(self, max_pages: int = 20) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for page in range(1, max_pages + 1):
+            batch = self.request("GET", "/contacts", params={"per_page": 100, "page": page})
+            out.extend(batch)
+            if len(batch) < 100:
+                break
+        return out
+
     def find_contacts(self, email: str) -> list[dict[str, Any]]:
         return self.request("GET", "/contacts", params={"email": email.strip().lower()})
 
@@ -183,6 +192,15 @@ class FreshdeskClient:
 
     def solution_folders(self, category_id: int) -> list[dict[str, Any]]:
         return self.request("GET", f"/solutions/categories/{category_id}/folders")
+
+    def create_folder(self, category_id: int, **fields: Any) -> dict[str, Any]:
+        return self.request("POST", f"/solutions/categories/{category_id}/folders", json_body=fields)
+
+    def create_article(self, folder_id: int, **fields: Any) -> dict[str, Any]:
+        return self.request("POST", f"/solutions/folders/{folder_id}/articles", json_body=fields)
+
+    def create_category(self, **fields: Any) -> dict[str, Any]:
+        return self.request("POST", "/solutions/categories", json_body=fields)
 
     def folder_articles(self, folder_id: int) -> list[dict[str, Any]]:
         return self.request("GET", f"/solutions/folders/{folder_id}/articles")
@@ -330,8 +348,9 @@ class FreshdeskTools:
         }
 
     def lookup_account(self, email: str) -> dict[str, Any]:
+        email = str(email).strip().strip(".,;:<>()[]\"'")
         try:
-            found = self.fd.find_contacts(str(email))
+            found = self.fd.find_contacts(email)
         except FreshdeskError as e:
             return {"error": str(e)[:300]}
         if not found:
@@ -380,7 +399,13 @@ class FreshdeskTools:
         )
 
     def _merge_tags(self, ticket_id: int, add: list[str]) -> list[str]:
-        t = self._tickets.get(int(ticket_id)) or {}
+        """Freshdesk replaces the tag list on update, so merge with the ticket's current tags."""
+        t = self._tickets.get(int(ticket_id))
+        if t is None:
+            try:
+                t = self._tickets[int(ticket_id)] = self.fd.get_ticket(int(ticket_id), include="")
+            except FreshdeskError:
+                t = {}
         cur = list(t.get("tags") or [])
         for x in add:
             if x not in cur:
@@ -496,7 +521,9 @@ class FakeFreshdesk:
             return ok(sorted(self.tickets.values(), key=lambda t: t["id"]))
         if path == "/tickets" and m == "POST":
             email = (body.get("email") or "").lower()
-            cid = next((c["id"] for c in self.contacts.values() if c["email"] == email), None)
+            cid = body.get("requester_id") or next(
+                (c["id"] for c in self.contacts.values() if c["email"] == email), None
+            )
             if cid is None:
                 cid = self.create_contact({"email": email, "name": body.get("name") or email})["id"]
             tid = self._next()
