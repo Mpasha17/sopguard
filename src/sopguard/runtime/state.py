@@ -3,12 +3,14 @@ expressions can call (``called``, ``verified``, ``last_result`` ...)."""
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from sopguard.policy.schema import Policy
+from sopguard.runtime import pii
 
 
 class ToolRecord(BaseModel):
@@ -117,6 +119,10 @@ class SessionState(BaseModel):
         def approved(rule_id: str) -> bool:
             return rule_id in self.approvals
 
+        def contains_any(hay: Any, needles: Any) -> bool:
+            h = str(hay or "").lower()
+            return any(str(n).lower() in h for n in (needles or []))
+
         def days_between(a: str, b: str) -> int:
             return (date.fromisoformat(str(b)[:10]) - date.fromisoformat(str(a)[:10])).days
 
@@ -135,6 +141,9 @@ class SessionState(BaseModel):
             "max": max,
             "contains": lambda hay, needle: str(needle).lower() in str(hay).lower(),
             "days_between": days_between,
+            "contains_any": contains_any,
+            "matches": lambda text, pattern: bool(re.search(str(pattern), str(text or ""), re.I)),
+            "has_pii": lambda text, kind="card_number": bool(pii.detect(str(text or ""), [kind])),
         }
 
     def transcript(self, limit: int = 12) -> list[dict[str, str]]:

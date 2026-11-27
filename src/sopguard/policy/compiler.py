@@ -48,6 +48,9 @@ HELPERS = {
     "max",
     "contains",
     "days_between",
+    "contains_any",
+    "matches",
+    "has_pii",
 }
 
 

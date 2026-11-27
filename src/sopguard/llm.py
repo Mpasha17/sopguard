@@ -238,11 +238,15 @@ class GeminiLLM(_HTTPLLM):
 
     def _call(self, system: str, user: str) -> tuple[str, int, int]:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-        body = {
+        body: dict[str, Any] = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
             "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
         }
+        if self.model.startswith("gemma"):  # Gemma on the Gemini API has no system instruction / JSON mode
+            body.pop("systemInstruction")
+            body["contents"][0]["parts"][0]["text"] = f"{system}\n\n{user}"
+            body["generationConfig"] = {"temperature": 0}
         r = self.client.post(url, json=body, headers={"x-goog-api-key": self.api_key}, timeout=self.timeout)
         self._check(r)
         data = r.json()
@@ -283,9 +287,42 @@ class OpenAICompatLLM(_HTTPLLM):
         return data["choices"][0]["message"]["content"] or "", u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
 
 
+class FallbackLLM(LLM):
+    """Try providers in order; once one hits a hard failure (daily quota, auth, outage after retries) it is
+    skipped for the rest of the run. ``Usage.model`` on every call records which model actually answered."""
+
+    def __init__(self, chain: list[LLM]) -> None:
+        if not chain:
+            raise LLMError("empty fallback chain")
+        self.chain = chain
+        self.dead: set[int] = set()
+        self.name = "chain"
+        self.model = "+".join(c.model for c in chain)
+        self._lock = threading.Lock()
+
+    def describe(self) -> str:
+        return "chain(" + ", ".join(c.describe() for c in self.chain) + ")"
+
+    def complete_json(self, step, system, user, schema, context=None):  # type: ignore[override]
+        last: Exception | None = None
+        for i, llm in enumerate(self.chain):
+            if i in self.dead:
+                continue
+            try:
+                return llm.complete_json(step, system, user, schema, context)
+            except LLMError as e:
+                last = e
+                if isinstance(e, FatalLLMError) or "failed after" in str(e):
+                    with self._lock:
+                        self.dead.add(i)
+        raise LLMError(f"all providers failed: {last!r}"[:600])
+
+
 def get_llm(spec: str, fake: Responder | None = None, rpm: float | None = None) -> LLM:
     """Build a client from a spec: ``fake`` | ``gemini[:model]`` | ``groq[:model]`` | ``ollama[:model]``,
     optionally suffixed with ``@<requests per minute>``."""
+    if "," in spec:  # fallback chain: gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b
+        return FallbackLLM([get_llm(x.strip(), fake=fake, rpm=rpm) for x in spec.split(",") if x.strip()])
     spec, _, rpm_s = spec.partition("@")  # optional per-model pacing: gemini:gemini-3.5-flash-lite@12
     kind, _, model = spec.partition(":")
     kind = kind.lower()
