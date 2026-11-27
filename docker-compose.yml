@@ -1,20 +1,56 @@
+# API (OpenAI-compatible proxy + optional Freshdesk webhook) and the polling worker.
+# Copy .env.example to .env and fill in keys. The audit log is append-only JSONL
+# (not SQLite); both services write it under the `audit` volume at /data.
 services:
   api:
     build: .
     ports: ["8080:8080"]
+    env_file:
+      - path: .env
+        required: false
     environment:
-      # judge for semantic rules: fake (offline) | gemini[:model] | groq[:model] | ollama[:model]
       SOPGUARD_JUDGE_LLM: ${SOPGUARD_JUDGE_LLM:-fake}
+      SOPGUARD_AGENT_LLM: ${SOPGUARD_AGENT_LLM:-gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b}
       SOPGUARD_UPSTREAM: ${SOPGUARD_UPSTREAM:-https://api.groq.com/openai/v1}
       SOPGUARD_AUDIT: /data/audit.jsonl
+      SOPGUARD_WEBHOOK_TOKEN: ${SOPGUARD_WEBHOOK_TOKEN:-}
+      SOPGUARD_DRY_RUN: ${SOPGUARD_DRY_RUN:-}
+      FRESHDESK_DOMAIN: ${FRESHDESK_DOMAIN:-}
+      FRESHDESK_API_KEY: ${FRESHDESK_API_KEY:-}
+      FRESHDESK_ESCALATION_GROUP_ID: ${FRESHDESK_ESCALATION_GROUP_ID:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-    command: ["sopguard", "serve", "--host", "0.0.0.0", "--port", "8080", "--audit", "/data/audit.jsonl"]
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    command: ["uvicorn", "sopguard.api:app_from_env", "--factory", "--host", "0.0.0.0", "--port", "8080"]
     volumes: ["audit:/data"]
-  demo:
+    restart: unless-stopped
+
+  worker:
     build: .
-    ports: ["7860:7860"]
+    env_file:
+      - path: .env
+        required: false
     environment:
+      SOPGUARD_JUDGE_LLM: ${SOPGUARD_JUDGE_LLM:-gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b}
+      SOPGUARD_AGENT_LLM: ${SOPGUARD_AGENT_LLM:-gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b}
+      SOPGUARD_AUDIT: /data/audit-freshdesk.jsonl
+      SOPGUARD_DRY_RUN: ${SOPGUARD_DRY_RUN:-}
+      FRESHDESK_DOMAIN: ${FRESHDESK_DOMAIN:-}
+      FRESHDESK_API_KEY: ${FRESHDESK_API_KEY:-}
+      FRESHDESK_ESCALATION_GROUP_ID: ${FRESHDESK_ESCALATION_GROUP_ID:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-    command: ["python", "app.py"]
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    command:
+      - sopguard
+      - freshdesk
+      - run
+      - --policy
+      - /app/policies/freshdesk_support_sop.md
+      - --audit
+      - /data/audit-freshdesk.jsonl
+    volumes: ["audit:/data"]
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
 volumes:
   audit: {}

@@ -363,7 +363,7 @@ python -m evals.regrade runs/heldout        # re-score saved transcripts without
 
 ## Deploy
 
-* **Docker:** `docker compose up` starts the API/proxy on `:8080` and the Gradio demo on `:7860`.
+* **Docker, Render, Fly, Freshdesk webhook:** see [docs/DEPLOY.md](docs/DEPLOY.md). `docker compose up` starts the FastAPI proxy and webhook on `:8080` and the `sopguard freshdesk run` worker. The Gradio demo is still `python app.py` (or a Hugging Face Space).
 * **Hugging Face Spaces:** `python space/deploy.py <user>/sopguard`, with `HF_TOKEN` set or after
   `hf auth login`. It uploads `app.py`, the package, bundled replays and results; the Space runs offline by
   default. Or set the repo secret `HF_TOKEN` and the variable `HF_SPACE`, and the `deploy-space` workflow

@@ -127,6 +127,7 @@ def create_app(
     app.state.supervisor = sup
 
     @app.get("/healthz")
+    @app.get("/health")
     def healthz() -> dict[str, Any]:
         return {"ok": True, "policy": policy.name, "policy_hash": policy.source_hash, "judge": judge_llm.describe()}
 
@@ -223,17 +224,27 @@ def create_app(
     return app
 
 
-def app_from_env() -> FastAPI:  # uvicorn --factory sopguard.api:app_from_env
-    app = create_app()
-    if os.getenv("FRESHDESK_DOMAIN") and os.getenv("SOPGUARD_WEBHOOK_TOKEN"):
-        from sopguard.integrations.freshdesk import FreshdeskClient
-        from sopguard.integrations.freshdesk_agent import build_supervisor
-        from sopguard.integrations.freshdesk_webhook import freshdesk_router
+def attach_freshdesk_webhook(app: FastAPI) -> FastAPI:
+    """Mount POST /freshdesk/webhook when domain + token are set (used by Docker and `sopguard serve`)."""
+    if not (os.getenv("FRESHDESK_DOMAIN") and os.getenv("SOPGUARD_WEBHOOK_TOKEN")):
+        return app
+    from sopguard.integrations.freshdesk import FreshdeskClient
+    from sopguard.integrations.freshdesk_agent import build_supervisor
+    from sopguard.integrations.freshdesk_webhook import freshdesk_router
 
-        llm = get_llm(os.getenv("SOPGUARD_AGENT_LLM", "gemini:gemma-4-26b-a4b-it"))
-        sup = build_supervisor(judge_llm=llm, audit_path=os.getenv("SOPGUARD_AUDIT"))
-        app.include_router(
-            freshdesk_router(FreshdeskClient.from_env(), llm, sup, os.environ["SOPGUARD_WEBHOOK_TOKEN"],
-                             dry_run=os.getenv("SOPGUARD_DRY_RUN") == "1")
-        )  # fmt: skip
+    llm = get_llm(os.getenv("SOPGUARD_AGENT_LLM", "gemini:gemma-4-26b-a4b-it"))
+    sup = build_supervisor(judge_llm=llm, audit_path=os.getenv("SOPGUARD_AUDIT"))
+    app.include_router(
+        freshdesk_router(
+            FreshdeskClient.from_env(),
+            llm,
+            sup,
+            os.environ["SOPGUARD_WEBHOOK_TOKEN"],
+            dry_run=os.getenv("SOPGUARD_DRY_RUN") == "1",
+        )
+    )
     return app
+
+
+def app_from_env() -> FastAPI:  # uvicorn --factory sopguard.api:app_from_env
+    return attach_freshdesk_webhook(create_app())

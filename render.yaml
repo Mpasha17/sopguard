@@ -1,0 +1,66 @@
+# Render Blueprint: free web service (API + Freshdesk webhook) and a background
+# worker (`sopguard freshdesk run`). After the first deploy, set secret env vars
+# in the Render dashboard (they are marked sync: false below).
+#
+# Webhooks: point a Freshdesk automation at https://<api>.onrender.com/freshdesk/webhook
+# Background workers may require a paid instance; the free web service alone is
+# enough if you use the webhook instead of polling.
+previewsEnabled: false
+services:
+  - type: web
+    name: sopguard-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: SOPGUARD_JUDGE_LLM
+        value: gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b
+      - key: SOPGUARD_AGENT_LLM
+        value: gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b
+      - key: SOPGUARD_UPSTREAM
+        value: https://api.groq.com/openai/v1
+      - key: SOPGUARD_AUDIT
+        value: /data/audit.jsonl
+      - key: SOPGUARD_WEBHOOK_TOKEN
+        generateValue: true
+      - key: SOPGUARD_DRY_RUN
+        value: "0"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: FRESHDESK_DOMAIN
+        sync: false
+      - key: FRESHDESK_API_KEY
+        sync: false
+      - key: FRESHDESK_ESCALATION_GROUP_ID
+        sync: false
+
+  - type: worker
+    name: sopguard-worker
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: sopguard freshdesk run --policy /app/policies/freshdesk_support_sop.md --audit /data/audit-freshdesk.jsonl
+    envVars:
+      - key: SOPGUARD_JUDGE_LLM
+        value: gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b
+      - key: SOPGUARD_AGENT_LLM
+        value: gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b
+      - key: SOPGUARD_AUDIT
+        value: /data/audit-freshdesk.jsonl
+      - key: SOPGUARD_DRY_RUN
+        value: "0"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: FRESHDESK_DOMAIN
+        sync: false
+      - key: FRESHDESK_API_KEY
+        sync: false
+      - key: FRESHDESK_ESCALATION_GROUP_ID
+        sync: false

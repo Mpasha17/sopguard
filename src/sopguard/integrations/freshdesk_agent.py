@@ -15,6 +15,7 @@ until the agent calls ``finish`` or the step budget runs out.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -28,7 +29,20 @@ from sopguard.llm import LLM, LLMError, Usage
 from sopguard.runtime.decision import Action, Decision
 from sopguard.runtime.supervisor import Session
 
-POLICY_PATH = Path(__file__).resolve().parents[3] / "policies" / "freshdesk_support_sop.md"
+
+def _freshdesk_policy_path() -> Path:
+    """Repo checkout, Docker image (/app/policies), or SOPGUARD_FRESHDESK_POLICY."""
+    override = os.environ.get("SOPGUARD_FRESHDESK_POLICY")
+    if override:
+        return Path(override)
+    candidates = (
+        Path("/app/policies/freshdesk_support_sop.md"),
+        Path(__file__).resolve().parents[3] / "policies" / "freshdesk_support_sop.md",
+    )
+    return next((p for p in candidates if p.is_file()), candidates[-1])
+
+
+POLICY_PATH = _freshdesk_policy_path()
 KB_CATEGORY = "SOPGuard Demo Help Center"
 HANDOFF = (
     "Thanks for reaching out. I've passed your ticket to a specialist on our team, who will follow up with you "

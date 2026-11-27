@@ -19,6 +19,14 @@ from typing import Any
 from sopguard.policy.compiler import PolicyError, explain, load_policy
 
 DEMO_SOP = Path(__file__).parent / "demo" / "northwind_sop.md"
+
+
+def _freshdesk_policy() -> Path:
+    from sopguard.integrations.freshdesk_agent import POLICY_PATH
+
+    return POLICY_PATH
+
+
 ICON = {"allow": "✓", "steer": "↺", "block": "✗", "escalate": "⇪"}
 
 
@@ -128,7 +136,7 @@ def cmd_chat(a: argparse.Namespace) -> int:
 def cmd_serve(a: argparse.Namespace) -> int:
     import uvicorn
 
-    from sopguard.api import create_app
+    from sopguard.api import attach_freshdesk_webhook, create_app
     from sopguard.llm import get_llm
     from sopguard.runtime.judge import fake_judge_responder
 
@@ -136,6 +144,7 @@ def cmd_serve(a: argparse.Namespace) -> int:
         load_policy(a.policy), judge_llm=get_llm(a.judge_llm or "fake", fake=fake_judge_responder),  # type: ignore[arg-type]
         upstream_url=a.upstream, audit_path=a.audit,
     )  # fmt: skip
+    attach_freshdesk_webhook(app)
     uvicorn.run(app, host=a.host, port=a.port)
     return 0
 
@@ -209,9 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     fr = fds.add_parser("run", help="poll open tickets, run the agent under SOPGuard, write back to Freshdesk")
     fr.add_argument("--llm", default="gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b")
     fr.add_argument("--judge-llm", default=None)
-    fr.add_argument(
-        "--policy", default=str(Path(__file__).resolve().parents[2] / "policies" / "freshdesk_support_sop.md")
-    )
+    fr.add_argument("--policy", default=str(_freshdesk_policy()))
     fr.add_argument("--mode", default="supervised", choices=["unsupervised", "prompt_only", "supervised"])
     fr.add_argument("--ticket", type=int, default=None, help="work just this ticket id")
     fr.add_argument("--tag", default=None, help="only tickets with this tag")

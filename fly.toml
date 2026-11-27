@@ -1,0 +1,52 @@
+# fly.toml — API process plus a polling worker. Rename the app before the first
+# deploy: `fly launch --copy-config` or `fly apps create <name>` and edit `app`.
+#
+#   fly launch --copy-config --no-deploy
+#   fly secrets set GEMINI_API_KEY=... GROQ_API_KEY=... FRESHDESK_DOMAIN=... \
+#     FRESHDESK_API_KEY=... SOPGUARD_WEBHOOK_TOKEN=...
+#   fly volumes create sopguard_data --size 1  # optional, for the audit log
+#   fly deploy
+#
+# Point a Freshdesk automation at https://<app>.fly.dev/freshdesk/webhook
+
+app = "sopguard"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[processes]
+  api = "uvicorn sopguard.api:app_from_env --factory --host 0.0.0.0 --port 8080"
+  worker = "sopguard freshdesk run --policy /app/policies/freshdesk_support_sop.md --audit /data/audit-freshdesk.jsonl"
+
+[env]
+  SOPGUARD_AUDIT = "/data/audit.jsonl"
+  SOPGUARD_JUDGE_LLM = "gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b"
+  SOPGUARD_AGENT_LLM = "gemini:gemini-3-flash-preview,groq:openai/gpt-oss-120b"
+  SOPGUARD_UPSTREAM = "https://api.groq.com/openai/v1"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["api"]
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+# Uncomment after `fly volumes create sopguard_data --size 1`:
+# [[mounts]]
+#   source = "sopguard_data"
+#   destination = "/data"
+#   processes = ["api", "worker"]

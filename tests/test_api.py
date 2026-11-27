@@ -9,7 +9,7 @@ from sopguard.api import create_app
 
 def test_supervision_endpoints(policy, shop):
     c = TestClient(create_app(policy))
-    assert c.get("/healthz").json()["ok"]
+    assert c.get("/healthz").json()["ok"] and c.get("/health").json()["ok"]
     assert len(c.get("/v1/policy").json()["policy"]["rules"]) == 14
     lo = pick(shop)
     d = c.post(

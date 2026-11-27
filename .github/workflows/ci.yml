@@ -30,5 +30,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - run: docker build -t sopguard .
-      - run: docker run --rm sopguard sopguard demo | tail -20
+      - name: Build image
+        run: docker build -t sopguard:ci .
+      - name: Smoke-test /health
+        run: |
+          set -euo pipefail
+          docker run -d --rm --name sopguard-ci -p 8080:8080 -e SOPGUARD_JUDGE_LLM=fake sopguard:ci
+          cleanup() { docker logs sopguard-ci || true; docker stop sopguard-ci || true; }
+          trap cleanup EXIT
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health | grep -q '"ok"'; then
+              curl -fsS http://127.0.0.1:8080/healthz >/dev/null
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ok" = 1
