@@ -322,6 +322,39 @@ python -m evals.regrade runs/heldout        # re-score saved transcripts without
 * **Audit.** Append-only JSONL with policy hash, rule ids, SOP citations, latency and judge tokens per
   decision (`sopguard audit audit.jsonl --interventions`).
 
+## Architecture
+
+SOPGuard sits in front of the agent's tools and replies. Deterministic SOP checks run first;
+an LLM judge is used only for semantic rules. One of the integrations is a Freshdesk worker:
+it reads a real ticket, proposes a tool call or reply, asks SOPGuard, and only then writes
+back through the Freshdesk API.
+
+```mermaid
+sequenceDiagram
+    participant FD as Freshdesk
+    participant A as Support agent
+    participant S as SOPGuard
+    participant L as Audit log
+    FD->>A: open ticket
+    A->>S: proposed tool call or reply
+    S->>S: deterministic checks, then LLM judge if needed
+    alt allow
+        S-->>A: allow
+        A->>FD: Freshdesk API write
+    else steer or block
+        S-->>A: feedback with SOP citation
+    else escalate
+        S-->>A: escalate
+        A->>FD: hand off to a human
+    end
+    S->>L: decision + SOP citations
+```
+
+The design, decision semantics, failure modes and threat model are in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Connecting a free Freshdesk help desk,
+seeding tickets, and running the worker (dry-run or live) is in
+[`docs/FRESHDESK.md`](docs/FRESHDESK.md).
+
 ## Limitations
 
 <!-- LIMITATIONS:start -->
